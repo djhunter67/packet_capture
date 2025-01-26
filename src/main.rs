@@ -74,7 +74,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let packet = packet.to_vec();
                 count += 1;
                 println!("Packet {count} length: {}", packet.len());
-                analyze_packet(EthernetPacket::new(&packet), found.clone(), packet.len());
+                analyze_packet(EthernetPacket::new(&packet), found.clone(), &packet);
+                if count >= 1500 {
+                    // Stop capture
+                    break;
+                }
             }
             Err(err) => {
                 println!("Packet reading error occurred: {err:?}");
@@ -83,21 +87,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    println!("\n\n\tCAPTURE COMPLETE\n\n");
+
     Ok(())
 }
 
-fn analyze_packet(packet: Option<EthernetPacket>, found: NetworkInterface, packet_size: usize) {
+fn analyze_packet(packet: Option<EthernetPacket>, found: NetworkInterface, raw_packet: &[u8]) {
     match packet {
         Some(packet) => {
             println!("\nTCP Packet:");
-            println!("  Source Port: {:?}", packet.get_source());
-            println!("  Destination Port: {:?}", packet.get_destination());
+            println!("  Source MAC: {:?}", packet.get_source());
+            println!("  Destination MAC: {:?}", packet.get_destination());
             println!(
-                "    Destination Match: {:?}",
+                "    Destination is Host?: {:?}",
                 packet.get_destination() == found.mac.unwrap()
             );
-            println!("  Payload len: {}", packet.payload().len());
-            println!("  Data Size: {}\n\n", packet_size - packet.payload().len());
+            println!(
+                "  Source Port: {}",
+                std::str::from_utf8(&[packet.payload()[0]])
+                    .unwrap_or("Invalid UTF-8")
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation())
+                    .collect::<String>()
+            );
+            println!(
+                "  Destination Port: {}",
+                std::str::from_utf8(&[packet.payload()[1]])
+                    .unwrap_or("Invalid UTF-8")
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation())
+                    .collect::<String>()
+            );
+            // for pyload in packet.payload().chunks(1) {
+            //     println!(
+            //         "  Payload: {}",
+            //         std::str::from_utf8(pyload)
+            //             .unwrap_or("Invalid UTF-8")
+            //             .chars()
+            //             .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation())
+            //             .collect::<String>()
+            //     );
+            // }
+            println!(
+                "  Data Size: {}\n\n",
+                raw_packet.len() - packet.payload().len()
+            );
         }
         None => {
             println!("NO PACKET FOUND");
