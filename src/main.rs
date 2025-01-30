@@ -4,41 +4,48 @@ use std::{
     net::Ipv4Addr,
 };
 
-use models::helpers::Pool;
+use models::postgres::Pool;
 use pnet::{
     datalink::{self, Channel, NetworkInterface},
     ipnetwork::IpNetwork,
     packet::{ethernet::EthernetPacket, Packet},
 };
-use postgres::{Client, NoTls};
+use postgres::Client;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let db_pool = Pool::new("10.20.30.23", "packets", "djhunter67", "PNF27156");
 
     println!("\n\n\tInitializing the DB tables\n\n\t");
-    match db_pool.init_db() {
-        Ok(_) => println!("DB tables initialized"),
-        Err(e) => println!("Error initializing DB tables: {:?}", e),
+    // let mut db_pool = db_pool.init_db()?;
+
+    let mut db_pool = match db_pool.init_db() {
+        Ok(pool) => {
+            println!("\nDB tables initialized\n");
+            pool
+        }
+        Err(e) => {
+            println!("Error initializing DB tables: {:?}", e);
+            return Err(e);
+        }
     };
 
-    let interface_name: &str = "enp8s0f1";
+    // let interface_name: &str = "enp8s0f1";
 
-    println!("Retreiving all interfaces");
+    println!("\nRetreiving all interfaces\n");
     let interfaces = datalink::interfaces();
 
-    println!("The interface chosen: {}", interfaces.len());
-    let found: NetworkInterface = match interfaces
-        .iter()
-        .filter(|ip_s| !ip_s.ips.is_empty()) // Removeinterfaces without IPs
-        .find(|iface| iface.name == interface_name)
-    {
-        Some(iface) => iface.clone(),
-        None => return Err(anyhow::Error::msg("Interface not found")),
-    };
+    // println!("The interface chosen: {}", interfaces.len());
+    // let found: NetworkInterface = match interfaces
+    //     .iter()
+    //     .filter(|ip_s| !ip_s.ips.is_empty()) // Removeinterfaces without IPs
+    //     .find(|iface| iface.name == interface_name)
+    // {
+    //     Some(iface) => iface.clone(),
+    //     None => return Err(anyhow::Error::msg("Interface not found")),
+    // };
 
     // Find the first interface with a non-local IP address
-    let first_interface =
+    let selected_interface =
         match interfaces
             .iter()
             .filter(|ip_s| !ip_s.ips.is_empty())
@@ -57,11 +64,11 @@ async fn main() -> anyhow::Result<()> {
             None => return Err(anyhow::Error::msg("Interface not found")),
         };
 
-    println!("First interface: {}", first_interface.name);
-    println!("Found interface: {}", found.name);
+    println!("Selected interface: {}", selected_interface.name);
+    // println!("Found interface: {}", found.name);
 
     // Channel to receive packets
-    let (_tx, mut rx) = match datalink::channel(&first_interface, Default::default()) {
+    let (_tx, mut rx) = match datalink::channel(&selected_interface, Default::default()) {
         Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Unhandled channel type"),
         Err(e) => {
@@ -83,15 +90,18 @@ async fn main() -> anyhow::Result<()> {
             Ok(packet) => {
                 let packet = packet.to_vec();
                 count += 1;
-                println!("Packet {count} length: {}", packet.len());
-                analyze_packet(EthernetPacket::new(&packet), found.clone(), &packet);
+                println!("\nPacket {count} length: {}\n", packet.len());
+                analyze_packet(
+                    EthernetPacket::new(&packet),
+                    selected_interface.clone(),
+                    &packet,
+                );
                 save_packet(
                     EthernetPacket::new(&packet),
-                    found.clone(),
+                    selected_interface.clone(),
                     &packet,
-                    &db_pool,
-                )
-                .await;
+                    &mut db_pool,
+                );
                 if count >= 1500 {
                     // Stop capture
                     break;
@@ -156,11 +166,11 @@ fn analyze_packet(packet: Option<EthernetPacket>, found: NetworkInterface, raw_p
     }
 }
 
-async fn save_packet(
+fn save_packet(
     packet: Option<EthernetPacket<'_>>,
     found: NetworkInterface,
     raw_packet: &[u8],
-    client: &Pool,
+    client: &mut Client,
 ) {
     match packet {
         Some(packet) => {
@@ -179,11 +189,9 @@ async fn save_packet(
             let data_size = raw_packet.len() - packet.payload().len();
 
             let query = format!(
-		"INSERT INTO interface (interface, source_mac, destination_mac, source_port, destination_port, data_size) VALUES ('{}', '{}', '{}', '{}', '{}', {});",
-		found.description, source_mac, destination_mac, source_port, destination_port, data_size
+		"INSERT INTO packets (interface, source_mac, destination_mac, source_port, destination_port, data_size) VALUES ('{}', '{}', '{}', '{}', '{}', {});",
+		found.name, source_mac, destination_mac, source_port, destination_port, data_size
 	    );
-
-            let mut client = Client::connect(&client.connection_str, NoTls).unwrap();
 
             match client.batch_execute(&query) {
                 Ok(_) => {
